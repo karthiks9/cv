@@ -1,0 +1,10 @@
+void print_cones(unsigned char cones[][CONES_NUM_COLS]);
+void print_filter(float filter[][CS_NUM_COLS]);
+void print_image(unsigned char image[][IMAGE_NUM_PIXELS]);
+void print_rgc(float rgc_cells[][RGC_NUM_COLS]);
+void print_v1s(float v1s[][V1S_NUM_ROWS][V1S_NUM_COLS]);
+void print_v1c(float v1c[][V1C_NUM_ROWS][V1C_NUM_COLS]);
+void print_v2s(float v2s[V2S_NUM_CHANNELS][V2S_NUM_ROWS][V2S_NUM_COLS]);
+void print_v2c(float v2c[][V2C_NUM_ROWS][V2C_NUM_COLS]);
+void print_v4s(float v4s[][V4S_NUM_ROWS][V4S_NUM_COLS]);
+float relu(float input);
