@@ -5,6 +5,9 @@
 #include <time.h>
 #include "vision.h"
 #include "utils.h"
+#include "hashb.h"
+
+#define NUM_DIGITS (10)
 
 #define BKUP_FILES_DIR_NAME "bkup_files"
 #define V4S_FILTER_FILE_NAME "v4_filter_file"
@@ -20,12 +23,19 @@
 
 #define TOTAL_ELEMENTS (IMAGE_ELEMENTS_TOTAL + V1S_ELEMENTS_TOTAL + V1C_ELEMENTS_TOTAL + V2S_ELEMENTS_TOTAL + V2C_ELEMENTS_TOTAL + V4S_ELEMENTS_TOTAL)
 
-#define IMAGE_THRESHOLD 64
-#define V1S_THRESHOLD 400
-#define V1C_THRESHOLD 400
-#define V2S_THRESHOLD 400000
-#define V2C_THRESHOLD 400000
-#define V4S_THRESHOLD (2 * pow(10,10)) 
+#define IMAGE_THRESHOLD 25 //used to be 25
+#define V1S_THRESHOLD 20.0  //used to be 400, 900 is better than 400
+#define V1C_THRESHOLD 40.0  //used to be 400
+#define V2S_THRESHOLD 50.0 // used to be 400000
+#define V2C_THRESHOLD 50.0
+#define V4S_THRESHOLD (3 * pow(10,10))
+
+#define SLAB1 (IMAGE_ELEMENTS_TOTAL)
+#define SLAB2 (SLAB1 + V1S_ELEMENTS_TOTAL)
+#define SLAB3 (SLAB2 + V1C_ELEMENTS_TOTAL)
+#define SLAB4 (SLAB3 + V2S_ELEMENTS_TOTAL)
+#define SLAB5 (SLAB4 + V2C_ELEMENTS_TOTAL)
+#define SLAB6 (SLAB5 + V4S_ELEMENTS_TOTAL)
 
 unsigned char image[IMAGE_NUM_PIXELS] [IMAGE_NUM_PIXELS];
 unsigned char cones[CONES_NUM_ROWS] [CONES_NUM_COLS];
@@ -41,16 +51,16 @@ float v4s_filters[V4S_FILTER_NUM_CHANNELS][V4S_FILTER_ROWS][V4S_FILTER_COLS];
 #define INITIAL_HASH_VALUE (0.25)
 
 typedef struct world_state {
-	int learned; /* has this state already been learned */
+	int learned; /* flag to indicate if this state has already been learned */
 	float hash[TOTAL_ELEMENTS];
-	//unsigned short positions[TOTAL_ELEMENTS]; //this may not be needed
-	//int num_positions;
 } world_state_t;
 
 unsigned char hashcode[TOTAL_ELEMENTS];
+//float hashcode[TOTAL_ELEMENTS] = {0.0};
 unsigned short positions[TOTAL_ELEMENTS];
 int num_positions = 0;
 unsigned int train_mode = 1;
+int tmp_digit;
 world_state_t world_state[10]; //world_state contains hash for each digit
 
 int label; /* label used during trainning mode */
@@ -58,41 +68,41 @@ int label; /* label used during trainning mode */
 //#ifdef OLD_FILTERS //this is old and gold  ..
 #if 1
 float v1_filters[V1_NUM_FILTERS][V1_FILTER_ROWS][V1_FILTER_COLS] = {
-                                                                    {{1,1,1}, /* 180 horizontal */
-                                                                     {0,0,0},
-                                                                     {0,0,0}},
+                                                                    {{20.0, 20.0, 20.0}, /* 180 horizontal */
+                                                                     {-9.0, -9.0, -9.0},
+                                                                     {0,    0,     0}},
 
-                                                                    {{0,0,0},  /* 155 */
-                                                                     {1,0,0},
-                                                                     {0,1,0}},
+                                                                    {{0,    -9.0,   0},  /* 155 */
+                                                                     {20.0, -9.0,   0},
+                                                                     {0,     20.0,  0}},
 
-                                                                    {{1,0,0},  /* 135 */
-                                                                     {0,1,0},
-                                                                     {0,0,1}},
+                                                                    {{20.0, -9.0,  -9.0},  /* 135 */
+                                                                     {0,    20.0,  0},
+                                                                     {0,    0,     20.0}},
 
-                                                                    {{0,1,0},  /* 115 */
-                                                                     {0,0,1},
-                                                                     {0,0,0}},
+                                                                    {{0,     20.0,   0},  /* 115 */
+                                                                     {0,     -9.0,   20.0},
+                                                                     {-9.0,  0,      0}},
 
-                                                                    {{1,0,0},  /* 90 */
-                                                                     {1,0,0},
-                                                                     {1,0,0}},
+                                                                    {{20.0,   -9.0,   0},  /* 90 */
+                                                                     {20.0,   -9.0,   0},
+                                                                     {20.0,   -9.0,   0}},
 
-                                                                    {{0,1,0},  /* 65 */
-                                                                     {1,0,0},
-                                                                     {0,0,0}},
+                                                                    {{0,    20.0,   -9.0},  /* 65 */
+                                                                     {20.0, -9.0,   0},
+                                                                     {0,    0,      0}},
 
-                                                                    {{0,0,1},  /* 45 */
-                                                                     {0,1,0},
-                                                                     {1,0,0}},
+                                                                    {{0,    0,    20.0},  /* 45 */
+                                                                     {0,    20.0, -9.0},
+                                                                     {20.0, -9.0, 0}},
 
-                                                                    {{0,0,0},  /* 25 */
-                                                                     {0,0,1},
-                                                                     {0,1,0}},
+                                                                    {{0,   -9.0,   0},  /* 25 */
+                                                                     {-9.0, 0,     20.0},
+                                                                     {0,    20.0,  0}},
 
-                                                                    {{0,0,0},  /* 0 */
-                                                                     {0,0,0},
-                                                                     {1,1,1}}
+                                                                    {{-9.0,  -9.0,  -9.0},  /* 0 */
+                                                                     {0,     0,     0},
+                                                                     {20.0,  20.0,  20.0}}
                                                                    };
 #else 
 //this is experimental
@@ -135,43 +145,46 @@ float v1_filters[V1_NUM_FILTERS][V1_FILTER_ROWS][V1_FILTER_COLS] = {
                                                                    };
 #endif
 
+#define V2S_FILTERS_3 2 
+
 #ifdef V2S_FILTERS_3
+
 float v2s_filters[V2S_FILTER_CHANNELS][V2S_FILTER_ROWS][V2S_FILTER_COLS] = {
-                                                                    {{1,1,1}, /* 180 horizontal */
+                                                                    {{20.0,20.0,20.0}, /* 180 horizontal */
                                                                      {0,0,0},
+                                                                     {-9.0,-9.0,-9.0}},
+
+                                                                    {{0,-9.0,0},  /* 155 */
+                                                                     {20.0,-9.0,0},
+                                                                     {0,20.0,0}},
+
+                                                                    {{20.0,-9.0,-9.0},  /* 135 */
+                                                                     {0,20.0,0},
+                                                                     {0,0,20.0}},
+
+                                                                    {{0,20.0,0},  /* 115 */
+                                                                     {0,-9.0,20.0},
+                                                                     {-9.0,0,0}},
+
+                                                                    {{20.0,0,-9.0},  /* 90 */
+                                                                     {20.0,0,-9.0},
+                                                                     {20.0,0,-9.0}},
+
+                                                                    {{0,20.0,-9.0},  /* 65 */
+                                                                     {20.0,-9.0,0},
                                                                      {0,0,0}},
 
-                                                                    {{0,0,0},  /* 155 */
-                                                                     {1,0,0},
-                                                                     {0,1,0}},
-
-                                                                    {{1,0,0},  /* 135 */
-                                                                     {0,1,0},
-                                                                     {0,0,1}},
-
-                                                                    {{0,1,0},  /* 115 */
-                                                                     {0,0,1},
-                                                                     {0,0,0}},
-
-                                                                    {{1,0,0},  /* 90 */
-                                                                     {1,0,0},
-                                                                     {1,0,0}},
-
-                                                                    {{0,1,0},  /* 65 */
-                                                                     {1,0,0},
-                                                                     {0,0,0}},
-
-                                                                    {{0,0,1},  /* 45 */
-                                                                     {0,1,0},
-                                                                     {1,0,0}},
+                                                                    {{0,0,20.0},  /* 45 */
+                                                                     {0,20.0,-9.0},
+                                                                     {20.0,-9.0,0}},
 
                                                                     {{0,0,0},  /* 25 */
-                                                                     {0,0,1},
-                                                                     {0,1,0}},
+                                                                     {0,-9.0,20.0},
+                                                                     {-9.0,20.0,0}},
 
-                                                                    {{0,0,0},  /* 0 */
+                                                                    {{-9.0,-9.0,-9.0},  /* 0 */
                                                                      {0,0,0},
-                                                                     {1,1,1}}
+                                                                     {20.0,20.0,20.0}}
                                                                    };
 #else
 float v2s_filters[V2S_FILTER_CHANNELS][V2S_FILTER_ROWS][V2S_FILTER_COLS] = {
@@ -251,6 +264,7 @@ static void print_hash(void);
 static int process_hash_in_it(void);
 static void load_world_state(void);
 static void store_world_state(void);
+int get_slab(int);
 
 /******************** functions not called by main *********************************/
 
@@ -272,7 +286,7 @@ static void get_feature_combinations(int ch, int *feature1, int *feature2);
 static int adjust_weights(int ch, int i, int j);
 static float convolve_v4s(int feature1, int feature2, int c1, int c2, int filter_channel);
 static int compute_v4s(int f1, int f2, int ch);
-static int associate_hash_with_world(void);
+static int learn_hash(void);
 static int find_the_digits(void);
 
 /* main */
@@ -329,12 +343,13 @@ int main(int argc, char *argv[])
 	/* rgc output from the photoreceptor layer */
 	//printf("Computing RGC Output\n");
 
-	compute_rgc_output(rgc_cells, cones, filter);
-	//printf("Below is the RGC Output %d x %d\n\n", RGC_NUM_ROWS, RGC_NUM_COLS);
+	//compute_rgc_output(rgc_cells, cones, filter);
+	printf("Below is the RGC Output %d x %d\n\n", RGC_NUM_ROWS, RGC_NUM_COLS);
 	//print_rgc(rgc_cells);
 
 	/* get the v1s output for all of the filters */
-	compute_v1s_exp(v1s, rgc_cells, v1_filters);
+	compute_v1s_exp(v1s, image, v1_filters);
+	
 	//printf("Below is the V1S output %d %d\n", V1S_NUM_ROWS, V1S_NUM_COLS);
 	//print_v1s(v1s);
 
@@ -370,7 +385,7 @@ int main(int argc, char *argv[])
 	//print_v4s(v4s);
 
 	compute_hash();
-	//print_hash();
+	print_hash();
 
         // pass the hash to proto, and measure the response
         process_hash_in_it();
@@ -378,6 +393,8 @@ int main(int argc, char *argv[])
 	if(train_mode) {
 		store_world_state();
 	}
+
+	//print_world_state();
 
 	// the proto should be a running thing, the incoming hash makes the proto recognize something
 }
@@ -453,18 +470,57 @@ void store_world_state(void)
 	fclose(fptr);
 }
 
-static void copy_hash(float hash[TOTAL_ELEMENTS])
+static void initialize_hash(float hash[TOTAL_ELEMENTS])
 {
 	int i;
 
 	for(i=0; i<TOTAL_ELEMENTS; i++) {
 		if(hashcode[i] != 0) {
-			hash[i] = INITIAL_HASH_VALUE;
+			hash[i] = INITIAL_HASH_VALUE_YES;
+		} else {
+			hash[i] = INITIAL_HASH_VALUE_NO;
 		}
 	}
 }
 
-static int associate_hash_with_world(void)
+float adjust_value(float val, int slab)
+{
+	float max;
+	float min;
+
+	if(slab == 0) {
+		max = MAX_HASH_VALUE;
+		min = MIN_HASH_VALUE;
+	} else {
+		max = MAX_HASH_VALUE_V1S;
+		min = MIN_HASH_VALUE_V1S;
+	}
+
+	if(val > max) {
+		return max;
+	} else if(val < min) {
+		return min;
+	} else {
+		return val;
+	}
+}
+
+static void adjust_tmp_digit(void)
+{
+	int i;
+	int slab;
+
+	for(i=0; i<TOTAL_ELEMENTS; i++) {
+
+		slab = get_slab(i);
+
+		if(hashcode[i] == 1 && world_state[label].hash[i] > 0.5)
+			world_state[tmp_digit].hash[i] = adjust_value(world_state[tmp_digit].hash[i] - 0.01, slab);
+	}
+	
+}
+
+static int learn_hash(void)
 {
 	/*
 	 * Check if you already learnt this particular label,
@@ -476,11 +532,15 @@ static int associate_hash_with_world(void)
 	 */
 
 	int i;
+	int slab;
+
+	printf("learn_hash: label is %d\n", label);
 
 	if(world_state[label].learned == 0) {
-		copy_hash(world_state[label].hash);
+		initialize_hash(world_state[label].hash);
 		world_state[label].learned = 1;
-	} else {
+	}
+	else {
 		/* 
 		 * reinforce the hash : We compare the incoming hash to the existing one
 		 * If the element is ON in both the incoming hash and existing hash
@@ -489,17 +549,30 @@ static int associate_hash_with_world(void)
 		 */
 
 		for(i=0; i<TOTAL_ELEMENTS; i++) {
-			if(world_state[label].hash[i] != 0) {
 
-				if(hashcode[i]) {
-					world_state[label].hash[i] += 0.3;
-				} else {
-					world_state[label].hash[i] -= 0.1;
-				}
+
+			slab = get_slab(i);
+
+			if(hashcode[i]) {
+				if(slab == 0) 
+					world_state[label].hash[i] += HASH_VALUE_ADD;
+				else
+					world_state[label].hash[i] += HASH_VALUE_ADD_V1S;
 			} else {
-				world_state[label].hash[i] = INITIAL_HASH_VALUE;
+				if(slab == 0)
+					world_state[label].hash[i] -= HASH_VALUE_DEC;
+				else	
+					world_state[label].hash[i] -= HASH_VALUE_DEC_V1S;
 			}
+
+			world_state[label].hash[i] = adjust_value(world_state[label].hash[i], slab);
 		}
+
+#if 1
+		if(label != tmp_digit) {
+			adjust_tmp_digit();
+		}
+#endif
 	}
 
 	return 0;
@@ -507,7 +580,7 @@ static int associate_hash_with_world(void)
 
 float mod(float d)
 {
-	if(d < 0) {
+	if(d < 0.0) {
 		return d*(-1.0);
 	}
 
@@ -517,21 +590,67 @@ float mod(float d)
 float find_distance(int digit)
 {
 	int i;
-	int d = 0.0;
+	float d = 0.0;
+	float sum = 0.0;
+	float new = 0.0;
+	int total_elements = SLAB2;
+	int start = 0;
 
 	/*
 	 * Find the distance between the incoming hash and the hash for the digit in
 	 * the world_state
 	 */
 
-	for(i=0; i<TOTAL_ELEMENTS; i++) {
-		d += mod((float)world_state[digit].hash[i] - hashcode[i]);
+	printf("finding distance for digit %d\n", digit);
+
+	for(i=start; i<start+total_elements; i++) {
+
+		if(i == SLAB1) {
+			printf("d until image: %f \n", d);
+			sum = d;
+		}
+
+		if(i == SLAB2) {
+			new = d - sum;
+			sum = d;
+			printf("d until v1s: %f new: %f\n", d, new);
+		}
+
+		if(i == SLAB3) {
+			new = d - sum;
+			sum = d;
+			printf("d until v1c: %f new: %f\n", d, new);
+		}
+
+		if(i == SLAB4) {
+			new = d - sum;
+			sum = d;
+			printf("d until v2s: %f new: %f\n", d, new);
+		}
+
+		if(i == SLAB5) {
+			new = d - sum;
+			sum = d;
+			printf("d until v2c: %f new: %f\n", d, new);
+		}
+
+		if(i == SLAB6-1) {
+			new = d - sum;
+			printf("d until v4s: %f new: %f\n", d, new);
+		}
+
+#if 1
+		if(hashcode[i] == 0) {
+			d += world_state[digit].hash[i];
+		} else {
+			d -= world_state[digit].hash[i];
+		}
+#endif
+
 	}
 
 	return d;
-
 }
-
 
 static int find_the_digits(void)
 {
@@ -546,20 +665,21 @@ static int find_the_digits(void)
 	 */
 
 	int i;
-	float scores[10];
 	float score = 0.0;
+	float min_score = 0.0;
 	int digit = 0;
 
-	for(i=0; i<10; i++) {
-		scores[i] = find_distance(i);
-		printf("score for %d: %f\n", i, scores[i]);
-		if(i == 0) {
-			score = scores[i];
-		} else {
-			if(score > scores[i]) {
-				score = scores[i];
-				digit = i;
-			}
+	min_score = find_distance(0);
+	printf("score for 0 : %f \n", min_score);
+
+	for(i=1; i<10; i++) {
+
+		score = find_distance(i);
+		printf("score for %d: %f\n", i, score);
+
+		if(score < min_score) {
+			min_score = score;
+			digit = i;
 		}
 	}
 
@@ -570,10 +690,13 @@ static int process_hash_in_it(void)
 {
 	int d;
 
+	d = find_the_digits();
+
+	tmp_digit = d;
+
 	if(train_mode) {
-		associate_hash_with_world();
+		learn_hash();
 	} else {
-		d = find_the_digits();
 		printf("given digit is %d\n", d);
 	}
 
@@ -672,7 +795,7 @@ static int compute_rgc_output(float rgc_cells[][RGC_NUM_COLS], unsigned char con
 static int compute_v1s_exp(float v1s[][V1S_NUM_ROWS][V1S_NUM_COLS], float rgc[][RGC_NUM_COLS], float filters[][V1_FILTER_ROWS][V1_FILTER_COLS])
 {
 	int i, k, c;
-	
+
 	/* set output to all zero */
 	memset(v1s, 0, V1S_NUM_CHANNELS * V1S_NUM_ROWS * V1S_NUM_COLS * sizeof(float));
 
@@ -681,6 +804,7 @@ static int compute_v1s_exp(float v1s[][V1S_NUM_ROWS][V1S_NUM_COLS], float rgc[][
 			for(k=0; k<V1S_NUM_COLS; k++) {
 				//rgc is 2d, filters[c] is 2d, they convolve and give scalar
 				v1s[c][i][k] = convolve_v1(rgc, filters[c], i, k);
+				//printf("v1s %f\n", v1s[c][i][k]);
 			}
 		}
 	}
@@ -720,7 +844,7 @@ static int compute_v2s_full(void)
 	 * Indices in filter   : 0    1    2    3    4   5   6   7   8
 	 *
 	 * The last parameter to compute_v2s_new is the channel in v2s that we want to fill
-	 * the first 2 parameters are the channels in v1c that we are mating
+	 * the first 2 parameters are the channels in v1c that we are multing
 	 * So the channel(last parameter) corresponds to the feature in the V1s2
 	 */
 
@@ -735,7 +859,7 @@ static int compute_v2s_full(void)
         channel_list[3] = 7;
 	n_channels = 4;
 
-	compute_v2s_new_array(channel_list, n_channels, 4);//circle, here we are mating a list of channels
+	compute_v2s_new_array(channel_list, n_channels, 4);//circle, here we are multing a list of channels
 
 	return 0;
 }
@@ -819,7 +943,7 @@ static int learn_v4s_filter(void)
 		}
 	}
 
-	return 0;  
+	return 0;
 }
 
 static void store_v4s_filter(void)
@@ -852,13 +976,13 @@ static void store_v4s_filter(void)
 
 /*
  * We need only 5 filters because the number of features from our input V2C is 5.
- * When we mate the v2c features 0 and 1, we use the V4 filters 0 and 1, and so on.
+ * When we mult the v2c features 0 and 1, we use the V4 filters 0 and 1, and so on.
  * So even though we compute 10 features for V4S here, we only need 5 filters because 
  * our input has only 5 features.
- * The filters basically tell us how to mate.
+ * The filters basically tell us how to mult.
  * They tell us which two numbers to multiply from the two input features.
  * The filters are only 1 or 0 (as of now)
- * What they tell us, is that we need to mate corresponding features in the two input
+ * What they tell us, is that we need to mult corresponding features in the two input
  * We need to select an element from input1 and an element from input2.
  * We use filter1 to select an element from input1.
  * We use filter2 to select an element from input2.
@@ -870,17 +994,17 @@ static int compute_v4s_full(void)
 
 	/* we need 10 filters */
 
-	compute_v4s(0, 1, 0); //mate the first 2 features in v2c and put it in index 0, use the filter 0 for that.
+	compute_v4s(0, 1, 0); //mult the first 2 features in v2c and put it in index 0, use the filter 0 for that.
                                // the last argument serves as both the output v4s index  and the filter channel index
-	compute_v4s(0, 2, 1); //mate the first and third features in v2c and put it in index 1
-	compute_v4s(0, 3, 2); //mate the first and fourth features in v2c and put it in index 2
-	compute_v4s(0, 4, 3); //mate the first and fifth features in v2c and put it in index 3
-	compute_v4s(1, 2, 4); //mate the second and third features in v2c and put it in index 4
-	compute_v4s(1, 3, 5); //mate the second and fourth  features in v2c and put it in index 5
-	compute_v4s(1, 4, 6); //mate the second and fifth features in v2c and put it in index 6
-	compute_v4s(2, 3, 7); //mate the third and fourth features in v2c and put it in index 7
-	compute_v4s(2, 4, 8); //mate the third and fifth features in v2c and put it in index 8
-	compute_v4s(3, 4, 9); //mate the fourth and fifth features in v2c and put it in index 9
+	compute_v4s(0, 2, 1); //mult the first and third features in v2c and put it in index 1
+	compute_v4s(0, 3, 2); //mult the first and fourth features in v2c and put it in index 2
+	compute_v4s(0, 4, 3); //mult the first and fifth features in v2c and put it in index 3
+	compute_v4s(1, 2, 4); //mult the second and third features in v2c and put it in index 4
+	compute_v4s(1, 3, 5); //mult the second and fourth  features in v2c and put it in index 5
+	compute_v4s(1, 4, 6); //mult the second and fifth features in v2c and put it in index 6
+	compute_v4s(2, 3, 7); //mult the third and fourth features in v2c and put it in index 7
+	compute_v4s(2, 4, 8); //mult the third and fifth features in v2c and put it in index 8
+	compute_v4s(3, 4, 9); //mult the fourth and fifth features in v2c and put it in index 9
 
 	return 0;
 }
@@ -896,7 +1020,92 @@ static void compute_hash(void)
 
 	for(i=0; i<IMAGE_NUM_PIXELS; i++) {
 		for(j=0; j<IMAGE_NUM_PIXELS; j++) {
-			value = image[i][j] > IMAGE_THRESHOLD;	
+			if(image[i][j] >= IMAGE_THRESHOLD) {
+				hashcode[index++] = 1;
+			} else {
+				hashcode[index++] = 0;
+			}
+		}
+	}
+
+	/* 
+	 * Now go through each layers and fill out the hash code
+	 */
+
+	for(i=0; i<V1S_NUM_CHANNELS; i++) {
+		for(j=0; j<V1S_NUM_ROWS; j++) {
+			for(k=0; k<V1S_NUM_COLS; k++) {
+				if(v1s[i][j][k] >= V1S_THRESHOLD) {
+					hashcode[index++] = 1;
+				} else {
+					hashcode[index++] = 0;
+				}
+			}
+		}
+	}
+
+	for(i=0; i<V1C_NUM_CHANNELS; i++) {
+		for(j=0; j<V1C_NUM_ROWS; j++) {
+			for(k=0; k<V1C_NUM_COLS; k++) {
+				if(v1c[i][j][k] >= V1C_THRESHOLD) {
+					hashcode[index++] = 1;
+				} else {
+					hashcode[index++] = 0;
+				}
+			}
+		}
+	}
+
+	for(i=0; i<V2S_NUM_CHANNELS; i++) {
+		for(j=0; j<V2S_NUM_ROWS; j++) {
+			for(k=0; k<V2S_NUM_COLS; k++) {
+				if(v2s[i][j][k] >= V2S_THRESHOLD) {
+					hashcode[index++] = 1;
+				} else {
+					hashcode[index++] = 0;
+				}
+			}
+		}
+	}
+
+	for(i=0; i<V2C_NUM_CHANNELS; i++) {
+		for(j=0; j<V2C_NUM_ROWS; j++) {
+			for(k=0; k<V2C_NUM_COLS; k++) {
+				if(v2c[i][j][k] >= V2C_THRESHOLD) {
+					hashcode[index++] = 1;
+				} else {
+					hashcode[index++] = 0;
+				}
+			}
+		}
+	}
+
+	for(i=0; i<V4S_NUM_CHANNELS; i++) {
+		for(j=0; j<V4S_NUM_ROWS; j++) {
+			for(k=0; k<V4S_NUM_COLS; k++) {
+				if(v4s[i][j][k] >= V4S_THRESHOLD) {
+					hashcode[index++] = 1;
+				} else {
+					hashcode[index++] = 0;
+				}
+			}
+		}
+	}
+}
+
+#if 0
+static void compute_hash_exp(void)
+{
+	int i, j, k, index = 0;
+	float value;
+
+	/*
+	 * First fill out the hash corresponding to the input
+	 */
+
+	for(i=0; i<IMAGE_NUM_PIXELS; i++) {
+		for(j=0; j<IMAGE_NUM_PIXELS; j++) {
+			value = image[i][j] / (float)IMAGE_THRESHOLD;	
 			hashcode[index++] = value;
 		}
 	}
@@ -908,7 +1117,7 @@ static void compute_hash(void)
 	for(i=0; i<V1S_NUM_CHANNELS; i++) {
 		for(j=0; j<V1S_NUM_ROWS; j++) {
 			for(k=0; k<V1S_NUM_COLS; k++) {
-				value = v1s[i][j][k] > V1S_THRESHOLD;
+				value = v1s[i][j][k] / (float)(V1S_THRESHOLD);
 				hashcode[index++] = value;
 			}
 		}
@@ -917,7 +1126,7 @@ static void compute_hash(void)
 	for(i=0; i<V1C_NUM_CHANNELS; i++) {
 		for(j=0; j<V1C_NUM_ROWS; j++) {
 			for(k=0; k<V1C_NUM_COLS; k++) {
-				value = v1c[i][j][k] > V1C_THRESHOLD;
+				value = v1c[i][j][k] / (float)(V1C_THRESHOLD);
 				hashcode[index++] = value;
 			}
 		}
@@ -926,7 +1135,7 @@ static void compute_hash(void)
 	for(i=0; i<V2S_NUM_CHANNELS; i++) {
 		for(j=0; j<V2S_NUM_ROWS; j++) {
 			for(k=0; k<V2S_NUM_COLS; k++) {
-				value = v2s[i][j][k] > V2S_THRESHOLD;
+				value = v2s[i][j][k] / (float)(V2S_THRESHOLD);
 				hashcode[index++] = value;
 			}
 		}
@@ -935,7 +1144,7 @@ static void compute_hash(void)
 	for(i=0; i<V2C_NUM_CHANNELS; i++) {
 		for(j=0; j<V2C_NUM_ROWS; j++) {
 			for(k=0; k<V2C_NUM_COLS; k++) {
-				value = v2c[i][j][k] > V2C_THRESHOLD;
+				value = v2c[i][j][k] / (float)(V2C_THRESHOLD);
 				hashcode[index++] = value;
 			}
 		}
@@ -944,32 +1153,81 @@ static void compute_hash(void)
 	for(i=0; i<V4S_NUM_CHANNELS; i++) {
 		for(j=0; j<V4S_NUM_ROWS; j++) {
 			for(k=0; k<V4S_NUM_COLS; k++) {
-				value = v4s[i][j][k] > V4S_THRESHOLD;
+				value = v4s[i][j][k] / (float)(V4S_THRESHOLD);
 				hashcode[index++] = value;
 			}
 		}
+	}
+}
+#endif
+
+int get_slab(int i)
+{
+	if(i >= 0 && i < SLAB1) {
+		return 0;
+	} else if(i >= SLAB1 && i < SLAB2) {
+		return 1;
+	} else if(i >= SLAB2 && i < SLAB3) {
+		return 2;
+	} else if(i >= SLAB3 && i < SLAB4) {
+		return 3;
+	} else if(i >= SLAB4 && i < SLAB5) {
+		return 4;
+	} else if(i >= SLAB5 && i < SLAB6) {
+		return 5;
 	}
 }
 
 static void print_hash(void)
 {
 	int i, pindex = 0;
+	float percent = 0.0;
+	int slab;
+	unsigned int slab_counts[6] = {0}; //6 slabs: image, v1s, v1c, v2s, v2c, v4s
+	float percents[6];
 
 	for(i=0; i<TOTAL_ELEMENTS; i++) {
 		if (hashcode[i] != 0) {
 			num_positions++;
 			positions[pindex++] = i;
+			slab = get_slab(i);
+			slab_counts[slab]++;
 		}
 	}
 
-	printf("Number of one positions are %d total: %d\n", num_positions, TOTAL_ELEMENTS);
-	printf("Below are the positions\n\n");
+	percent = (num_positions * 100) / (TOTAL_ELEMENTS);
 
+	percents[0] = (slab_counts[0] * 100) / (IMAGE_ELEMENTS_TOTAL);
+	percents[1] = (slab_counts[1] * 100) / (V1S_ELEMENTS_TOTAL);
+	percents[2] = (slab_counts[2] * 100) / (V1C_ELEMENTS_TOTAL);
+	percents[3] = (slab_counts[3] * 100) / (V2S_ELEMENTS_TOTAL);
+	percents[4] = (slab_counts[4] * 100) / (V2C_ELEMENTS_TOTAL);
+	percents[5] = (slab_counts[5] * 100) / (V4S_ELEMENTS_TOTAL);
+
+	printf("Number of one positions are %d total: %d percent: %f\n", num_positions, TOTAL_ELEMENTS, percent);
+
+	printf("Below is the slabwise percent  \n");
+
+	for(i=0; i<6; i++) {
+		printf("slab: %d number of one positions: %d percent: %f\n", i, slab_counts[i], percents[i]);
+	}
+
+	printf("Below are the positions\n\n");
+	
 	for(i=0; i<num_positions; i++) {
 		if(i % 20 == 0) {
 			printf("\n");
 		}
 		printf("  %d", positions[i]);
+	}
+
+	printf("slab1 (V1S) positions\n");
+
+	for(i=0; i<num_positions; i++) {
+		if(get_slab(positions[i]) == 1) {
+			printf("%d \n", positions[i]);
+		}
+			
 	}
 
 	printf("\n");
@@ -996,7 +1254,8 @@ static int is_center(int i, int k)
 
 static float activation(float input)
 {
-	return relu(input);
+	//return relu(input);
+	return input;
 }
 
 /*
@@ -1137,7 +1396,7 @@ static float get_nth_value(int n, int ch, int row_start, int col_start)
 }
 
 /*
- * Here we are mating 2 input features f1 and f2.
+ * Here we are multing 2 input features f1 and f2.
  * The input are from v1c. This function is called each time 
  * the sliding happens over the two features.
  * So the f1 and f2 may remain constant as we slide over and change the c1 and c2
@@ -1237,16 +1496,6 @@ static float convolve_v1(float rgc[][RGC_NUM_COLS], float filter[][V1_FILTER_COL
 			}
 			else {
 				value = rgc[i2][k2];
-			}
-			/*
-			 * This convolution essentially sees if there is a line in the input. 
-			 * If there is a 1 in our filter that means we expect an input in the corresponding position
-			 * in the rgc for a complete line to form. 
-			 * That's why if there is a 1 in filter and 0 in corresponding rgc, we detect there is no line.
-			 * So we return 0. This step is important, it discerns features well.
-			 */ 
-			if(filter[i][k] == 1 && value <= 0.0) {
-				return 0.0;
 			}
 
 			output += value * filter[i][k];
@@ -1410,7 +1659,7 @@ static int adjust_weights(int ch, int i, int j)
 
 	/*
 	 * The feature combinations are static.
-	 * They mention for each channel which 2 features are mated
+	 * They mention for each channel which 2 features are multd
 	 */
 	        
 	get_feature_combinations(ch, &feature1, &feature2);
@@ -1455,7 +1704,7 @@ static int adjust_weights(int ch, int i, int j)
 /*
  * This is a new method of convolution we are using.
  * Here we have 10 filters for V4S. These 10 filters 
- * will tell us how to mate the 10 feature combinations that we have decided.
+ * will tell us how to mult the 10 feature combinations that we have decided.
  * The filter tells us how the 2 features correlate.
  * For example if the filter is 
  *        0.1 0.0 0.1 0.0 0.0
